@@ -421,10 +421,10 @@ func (r *SearchResults) Files() []string
 - Comprehensive benchmarking tools
 
 ### 🚧 Planned Features
-- Streaming search for very large files (Task #28)
-- Plugin architecture for custom filters (Task #29)
-- Advanced caching mechanisms (Task #30)
-- Distributed search capabilities (Task #31)
+- Streaming search for very large files
+- Plugin architecture for custom filters
+- Advanced caching mechanisms
+- Distributed search capabilities
 
 ## Documentation
 
