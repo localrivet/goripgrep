@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -492,4 +493,180 @@ func BenchmarkFind(b *testing.B) {
 			}
 		}
 	})
+}
+
+func TestStreamingSearchConfiguration(t *testing.T) {
+	// Create a large test file to trigger streaming search
+	content := strings.Repeat("streaming search test pattern\n", 10000) // ~290KB
+	tmpFile, err := os.CreateTemp("", "large_test*.txt")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	tests := []struct {
+		name    string
+		options []Option
+		pattern string
+		wantErr bool
+	}{
+		{
+			name: "Enable streaming search with custom chunk size",
+			options: []Option{
+				WithStreamingSearch(true),
+				WithLargeSizeThreshold(100 * 1024), // 100KB threshold
+				WithChunkSize(64 * 1024),           // 64KB chunks
+			},
+			pattern: "streaming",
+			wantErr: false,
+		},
+		{
+			name: "Custom overlap size",
+			options: []Option{
+				WithStreamingSearch(true),
+				WithLargeSizeThreshold(100 * 1024),
+				WithOverlapSize(32 * 1024), // 32KB overlap
+			},
+			pattern: "search",
+			wantErr: false,
+		},
+		{
+			name: "Disable adaptive resize",
+			options: []Option{
+				WithStreamingSearch(true),
+				WithLargeSizeThreshold(100 * 1024),
+				WithAdaptiveResize(false),
+			},
+			pattern: "test",
+			wantErr: false,
+		},
+		{
+			name: "Disable memory mapping",
+			options: []Option{
+				WithStreamingSearch(true),
+				WithLargeSizeThreshold(100 * 1024),
+				WithMemoryMapping(false),
+			},
+			pattern: "pattern",
+			wantErr: false,
+		},
+		{
+			name: "Custom memory threshold",
+			options: []Option{
+				WithStreamingSearch(true),
+				WithLargeSizeThreshold(100 * 1024),
+				WithMemoryThreshold(256 * 1024 * 1024), // 256MB
+			},
+			pattern: "streaming",
+			wantErr: false,
+		},
+		{
+			name: "Custom min/max chunk sizes",
+			options: []Option{
+				WithStreamingSearch(true),
+				WithLargeSizeThreshold(100 * 1024),
+				WithMinChunkSize(16 * 1024),         // 16KB min
+				WithMaxChunkSize(128 * 1024 * 1024), // 128MB max
+			},
+			pattern: "search",
+			wantErr: false,
+		},
+		{
+			name: "Disable streaming search",
+			options: []Option{
+				WithStreamingSearch(false),
+				WithLargeSizeThreshold(100 * 1024),
+			},
+			pattern: "streaming",
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			results, err := Find(tt.pattern, tmpFile.Name(), tt.options...)
+
+			if tt.wantErr && err == nil {
+				t.Error("Expected error but got none")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
+
+			if err == nil {
+				if !results.HasMatches() {
+					t.Error("Expected matches but got none")
+				}
+				if results.Count() == 0 {
+					t.Error("Expected match count > 0")
+				}
+			}
+		})
+	}
+}
+
+func TestProgressCallbackIntegration(t *testing.T) {
+	// Create a large test file
+	content := strings.Repeat("progress callback test line\n", 5000) // ~135KB
+	tmpFile, err := os.CreateTemp("", "progress_test*.txt")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	var progressUpdates []float64
+	var mu sync.Mutex
+
+	progressCallback := func(bytesProcessed, totalBytes int64, percentage float64) {
+		mu.Lock()
+		defer mu.Unlock()
+		progressUpdates = append(progressUpdates, percentage)
+	}
+
+	results, err := Find("progress", tmpFile.Name(),
+		WithStreamingSearch(true),
+		WithLargeSizeThreshold(50*1024), // 50KB threshold
+		WithChunkSize(16*1024),          // 16KB chunks for more progress updates
+		WithProgressCallback(progressCallback),
+	)
+
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+
+	if !results.HasMatches() {
+		t.Error("Expected matches but got none")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(progressUpdates) == 0 {
+		t.Error("Expected progress updates but got none")
+	}
+
+	// Verify progress updates make sense
+	if len(progressUpdates) > 1 {
+		for i := 1; i < len(progressUpdates); i++ {
+			if progressUpdates[i] < progressUpdates[i-1] {
+				t.Errorf("Progress went backwards: %f to %f", progressUpdates[i-1], progressUpdates[i])
+			}
+		}
+	}
+
+	// Should end at 100%
+	finalProgress := progressUpdates[len(progressUpdates)-1]
+	if finalProgress != 100.0 {
+		t.Errorf("Expected final progress to be 100%%, got %f%%", finalProgress)
+	}
 }
