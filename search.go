@@ -25,6 +25,11 @@ type SearchConfig struct {
 	FilePattern     string
 	ContextLines    int
 	Timeout         time.Duration
+
+	// Streaming search configuration for large files
+	StreamingSearch    bool                 // Enable streaming search for large files
+	StreamingOptions   SlidingWindowOptions // Configuration for streaming search
+	LargeSizeThreshold int64                // File size threshold to trigger streaming search
 }
 
 // SearchEngine provides integrated search functionality
@@ -204,6 +209,15 @@ func (e *SearchEngine) searchWorker(ctx context.Context, pattern string, filesCh
 
 // searchFile searches a single file using the appropriate engine
 func (e *SearchEngine) searchFile(ctx context.Context, pattern string, filePath string) ([]Match, error) {
+	// Check if we should use streaming search for large files
+	if e.config.StreamingSearch {
+		fileInfo, err := os.Stat(filePath)
+		if err == nil && fileInfo.Size() >= e.config.LargeSizeThreshold {
+			// File is large enough for streaming search
+			return e.streamingSearch(ctx, pattern, filePath)
+		}
+	}
+
 	// Use the optimized engine if enabled
 	if e.config.UseOptimization {
 		// Create optimized engine for this pattern
@@ -224,6 +238,26 @@ func (e *SearchEngine) searchFile(ctx context.Context, pattern string, filePath 
 
 	// Fall back to simple search
 	return e.simpleSearch(ctx, pattern, filePath)
+}
+
+// streamingSearch performs streaming search on large files using the sliding window approach
+func (e *SearchEngine) streamingSearch(ctx context.Context, pattern string, filePath string) ([]Match, error) {
+	// Create a sliding window searcher with the configured options
+	searcher, err := NewSlidingWindowSearcher(filePath, pattern, e.config.StreamingOptions)
+	if err != nil {
+		// Fall back to simple search if streaming search fails to initialize
+		return e.simpleSearch(ctx, pattern, filePath)
+	}
+	defer searcher.Close()
+
+	// Perform the streaming search
+	matches, err := searcher.Search(ctx)
+	if err != nil {
+		// Fall back to simple search if streaming search fails
+		return e.simpleSearch(ctx, pattern, filePath)
+	}
+
+	return matches, nil
 }
 
 // simpleSearch performs a basic search without optimization

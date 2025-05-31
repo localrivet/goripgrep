@@ -27,6 +27,11 @@ type searchOptions struct {
 	filePattern   string
 	contextLines  int
 	timeout       time.Duration
+
+	// Streaming search options for large files
+	streamingSearch    bool                 // Enable streaming search for large files
+	streamingOptions   SlidingWindowOptions // Configuration for streaming search
+	largeSizeThreshold int64                // File size threshold to trigger streaming search
 }
 
 // defaultOptions returns the default search options
@@ -45,6 +50,11 @@ func defaultOptions() *searchOptions {
 		recursive:     false,
 		contextLines:  0,
 		timeout:       30 * time.Second,
+
+		// Streaming search defaults
+		streamingSearch:    true,                          // Enable streaming search by default
+		streamingOptions:   DefaultSlidingWindowOptions(), // Use default sliding window options
+		largeSizeThreshold: 100 * 1024 * 1024,             // 100MB threshold for streaming search
 	}
 }
 
@@ -98,6 +108,11 @@ func Find(pattern, path string, opts ...Option) (*SearchResults, error) {
 		FilePattern:     options.filePattern,
 		ContextLines:    options.contextLines,
 		Timeout:         options.timeout,
+
+		// Streaming search configuration
+		StreamingSearch:    options.streamingSearch,
+		StreamingOptions:   options.streamingOptions,
+		LargeSizeThreshold: options.largeSizeThreshold,
 	}
 
 	// Create and use SearchEngine
@@ -221,5 +236,105 @@ func WithSymlinks() Option {
 func WithRecursive(recursive bool) Option {
 	return func(opts *searchOptions) {
 		opts.recursive = recursive
+	}
+}
+
+// Streaming Search Configuration Options
+
+// WithStreamingSearch enables or disables streaming search for large files
+func WithStreamingSearch(enabled bool) Option {
+	return func(opts *searchOptions) {
+		opts.streamingSearch = enabled
+	}
+}
+
+// WithLargeSizeThreshold sets the file size threshold (in bytes) that triggers streaming search
+func WithLargeSizeThreshold(sizeBytes int64) Option {
+	return func(opts *searchOptions) {
+		if sizeBytes > 0 {
+			opts.largeSizeThreshold = sizeBytes
+		}
+	}
+}
+
+// WithChunkSize sets the chunk size for streaming search operations
+func WithChunkSize(chunkSize int64) Option {
+	return func(opts *searchOptions) {
+		if chunkSize > 0 {
+			opts.streamingOptions.ChunkSize = chunkSize
+		}
+	}
+}
+
+// WithOverlapSize sets the overlap size between chunks in streaming search
+func WithOverlapSize(overlapSize int64) Option {
+	return func(opts *searchOptions) {
+		if overlapSize >= 0 {
+			opts.streamingOptions.OverlapSize = overlapSize
+		}
+	}
+}
+
+// WithMemoryThreshold sets the memory threshold for adaptive chunk sizing
+func WithMemoryThreshold(threshold int64) Option {
+	return func(opts *searchOptions) {
+		if threshold > 0 {
+			opts.streamingOptions.MemoryThreshold = threshold
+		}
+	}
+}
+
+// WithMaxChunkSize sets the maximum allowed chunk size for streaming search
+func WithMaxChunkSize(maxSize int64) Option {
+	return func(opts *searchOptions) {
+		if maxSize > 0 {
+			opts.streamingOptions.MaxChunkSize = maxSize
+		}
+	}
+}
+
+// WithMinChunkSize sets the minimum allowed chunk size for streaming search
+func WithMinChunkSize(minSize int64) Option {
+	return func(opts *searchOptions) {
+		if minSize > 0 {
+			opts.streamingOptions.MinChunkSize = minSize
+		}
+	}
+}
+
+// WithAdaptiveResize enables or disables adaptive chunk resizing based on memory pressure
+func WithAdaptiveResize(enabled bool) Option {
+	return func(opts *searchOptions) {
+		opts.streamingOptions.AdaptiveResize = enabled
+	}
+}
+
+// WithMemoryMapping enables or disables memory mapping for large files when available
+func WithMemoryMapping(enabled bool) Option {
+	return func(opts *searchOptions) {
+		opts.streamingOptions.UseMemoryMap = enabled
+	}
+}
+
+// WithMaxPatternLength sets the maximum expected pattern length for overlap calculation
+func WithMaxPatternLength(maxLength int) Option {
+	return func(opts *searchOptions) {
+		if maxLength > 0 {
+			opts.streamingOptions.MaxPatternLength = maxLength
+		}
+	}
+}
+
+// WithProgressCallback sets a callback function for progress reporting during streaming search
+func WithProgressCallback(callback func(bytesProcessed, totalBytes int64, percentage float64)) Option {
+	return func(opts *searchOptions) {
+		opts.streamingOptions.ProgressCallback = callback
+	}
+}
+
+// WithStreamingOptions sets complete streaming search options (advanced usage)
+func WithStreamingOptions(options SlidingWindowOptions) Option {
+	return func(opts *searchOptions) {
+		opts.streamingOptions = options
 	}
 }

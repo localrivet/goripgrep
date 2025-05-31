@@ -1,0 +1,325 @@
+---
+description: Writing Svelte code with Go backend and adapter-static using Tailwind CSS, DaisyUI, and Soul AST-generated API endpoints
+globs: +page.svelte, +page.ts, +layout.svelte, +layout.ts, /**/src/lib/*.ts
+alwaysApply: true
+---
+
+# SvelteKit with Go Backend and Adapter-Static
+
+In this project, we use **Tailwind CSS** for utility-first styling and **DaisyUI** as a component library built on top of Tailwind CSS, providing a lightweight and customizable UI framework. The frontend is built with SvelteKit and paired with a Go backend using the **Soul AST system**, which generates API endpoints found in `./src/lib/api`. The `adapter-static` package is used to generate static files, served by the Go backend alongside the dynamic API routes.
+
+## Go Backend Integration with Soul AST
+
+The Go backend is powered by the **Soul AST system**, which generates API endpoints automatically. These endpoints are exposed via TypeScript clients in `./src/lib/api`, including functions like `RegisterPost`, `LoginPost`, and others, as defined in `endpoints.ts`. The SvelteKit frontend is configured with `adapter-static` to produce static files, which the Go server delivers alongside the Soul-generated API.
+
+### Setup Instructions
+
+1. **Install dependencies using pnpm**:
+   Initialize your SvelteKit project and install required packages:
+   ```bash
+   pnpm init
+   pnpm create svelte@latest my-svelte-go-app
+   cd my-svelte-go-app
+   pnpm install
+   pnpm add -D @sveltejs/adapter-static tailwindcss postcss autoprefixer daisyui
+   ```
+
+2. **Set up Tailwind CSS and DaisyUI**:
+   - Generate Tailwind configuration:
+     ```bash
+     pnpm dlx tailwindcss init -p
+     ```
+   - Update `tailwind.config.js`:
+     ```javascript
+     /** @type {import('tailwindcss').Config} */
+     export default {
+       content: ['./src/**/*.{html,js,svelte,ts}'],
+       theme: {
+         extend: {},
+       },
+       plugins: [require('daisyui')],
+       daisyui: {
+         themes: ["light", "dark", "cupcake"], // Customize as needed
+       },
+     };
+     ```
+   - Create `src/app.css`:
+     ```css
+     @tailwind base;
+     @tailwind components;
+     @tailwind utilities;
+     ```
+   - Import it in `src/routes/+layout.svelte`:
+     ```svelte
+     <script>
+       import '../app.css';
+     </script>
+     <slot />
+     ```
+
+3. **Configure adapter-static in `svelte.config.js`**:
+   ```javascript
+   import adapter from '@sveltejs/adapter-static';
+   import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
+
+   /** @type {import('@sveltejs/kit').Config} */
+   const config = {
+     preprocess: vitePreprocess(),
+     kit: {
+       adapter: adapter({
+         fallback: 'index.html', // Fallback for SPA routing
+         pages: 'build',         // Output directory
+         assets: 'build',        // Output directory
+       }),
+       paths: {
+         base: '', // Adjust if deploying to a subdirectory
+       },
+     },
+   };
+
+   export default config;
+   ```
+
+4. **Configure the Go backend**:
+   - The Soul AST system has already generated the backend handlers in `internal/handler/`. Use them in `main.go`:
+     ```go
+     package main
+
+     import (
+       "net/http"
+       "github.com/gin-gonic/gin"
+       "your-app/internal/handler" // Adjust to your module path
+     )
+
+     func main() {
+       router := gin.Default()
+
+       // Serve static files from the SvelteKit build directory
+       router.Static("/", "./build")
+
+       // Register Soul-generated API handlers
+       handler.RegisterHandlers(router)
+
+       // SPA fallback for client-side routing
+       router.NoRoute(func(c *gin.Context) {
+         c.File("./build/index.html")
+       })
+
+       router.Run(":8080")
+     }
+     ```
+   - Ensure `ast/` files (e.g., `main.api`, `api/handlers.api`) are defined and `make gen` has been run to generate the API.
+
+5. **Build and Run**:
+   - Build the SvelteKit frontend:
+     ```bash
+     pnpm build
+     ```
+   - Run the Go backend:
+     ```bash
+     go run main.go
+     ```
+   - Access the app at `http://localhost:8080`.
+
+## Accessing Soul-Generated API Endpoints
+
+The Soul AST system generates TypeScript API clients in `./src/lib/api`. Import and use these endpoints directly in your Svelte components. Below are examples using the provided endpoints:
+
+### Example: User Authentication
+
+```svelte
+/// file: src/routes/login/+page.svelte
+<script lang="ts">
+  import { api } from '@api'; // Soul-generated API endpoints
+  let email = $state('');
+  let password = $state('');
+  let error = $state<string | null>(null);
+  let success = $state(false);
+
+  async function handleLogin() {
+    try {
+      const response = await api.LoginPost({ email, password });
+      if (response.success) {
+        success = true;
+      }
+    } catch (e) {
+      error = e.message;
+    }
+  }
+</script>
+
+<div class="container p-4 mx-auto">
+  <h1 class="mb-4 text-2xl font-bold">Login</h1>
+  {#if success}
+    <p class="text-success">Logged in successfully!</p>
+  {:else}
+    <form onsubmit|preventDefault={handleLogin} class="space-y-4">
+      <input type="email" bind:value={email} placeholder="Email" class="w-full input input-bordered" />
+      <input type="password" bind:value={password} placeholder="Password" class="w-full input input-bordered" />
+      {#if error}
+        <p class="text-error">{error}</p>
+      {/if}
+      <button type="submit" class="btn btn-primary">Login</button>
+    </form>
+  {/if}
+</div>
+```
+
+### Example: Fetching User Profile
+
+```svelte
+/// file: src/components/Profile.svelte
+<script lang="ts">
+  import { api } from '@api';
+  let profile = $state<models.UserProfile | null>(null);
+  let error = $state<string | null>(null);
+
+  $effect(() => {
+    api.ProfileGet()
+      .then((data) => (profile = data))
+      .catch((e) => (error = e.message));
+  });
+</script>
+
+{#if error}
+  <p class="text-error">{error}</p>
+{:else if profile}
+  <div class="shadow-xl card bg-base-200">
+    <div class="card-body">
+      <h2 class="card-title">Profile</h2>
+      <p>Email: {profile.email}</p>
+      <p>Created: {profile.createdAt}</p>
+    </div>
+  </div>
+{:else}
+  <p class="text-info">Loading profile...</p>
+{/if}
+```
+
+### Example: Listing Repositories
+
+```svelte
+/// file: src/routes/repositories/+page.svelte
+<script lang="ts">
+  import { api } from '@api';
+  let userID = $state(1); // Example user ID
+  let repositories = $state<models.Repository[]>([]);
+  let error = $state<string | null>(null);
+
+  $effect(() => {
+    api.ListRepositoriesGet(userID)
+      .then((response) => (repositories = response.repositories))
+      .catch((e) => (error = e.message));
+  });
+</script>
+
+<div class="container p-4 mx-auto">
+  <h1 class="mb-4 text-2xl font-bold">Repositories</h1>
+  {#if error}
+    <p class="text-error">{error}</p>
+  {:else if repositories.length}
+    <ul class="space-y-2">
+      {#each repositories as repo}
+        <li class="shadow card bg-base-100">
+          <div class="card-body">
+            <p>URL: {repo.repoUrl}</p>
+            <p>Connected: {repo.hasToken ? 'Yes' : 'No'}</p>
+          </div>
+        </li>
+      {/each}
+    </ul>
+  {:else}
+    <p class="text-info">Loading repositories...</p>
+  {/if}
+</div>
+```
+
+- **Notes**:
+  - The `api` object is imported from `@api`, which maps to `./src/lib/api/index.ts`.
+  - Models (e.g., `UserProfile`, `Repository`) are also exported from `@api`.
+  - DaisyUI classes (`btn`, `card`, etc.) enhance the UI.
+
+## Project Structure
+
+```
+my-svelte-go-app/
+├── ast/                 # Soul AST API definitions
+│   ├── main.api         # Main entry point
+│   ├── common-types.api # Shared types
+│   └── api/             # API module
+│       ├── types.api    # API types
+│       └── handlers.api # API handlers
+├── src/                 # SvelteKit frontend source
+│   ├── lib/             # Shared utilities and APIs
+│   │   ├── api/         # Soul-generated API clients
+│   │   │   ├── index.ts
+│   │   │   ├── endpoints.ts
+│   │   │   ├── models.ts
+│   │   │   ├── constants.ts
+│   │   │   └── request.ts
+│   │   └── server/      # Server-side utilities
+│   ├── routes/          # SvelteKit routes
+│   └── components/      # Reusable Svelte components
+├── internal/            # Go backend (auto-generated by Soul AST)
+│   ├── handler/         # HTTP handlers
+│   ├── logic/           # Business logic
+│   ├── models/          # Database models
+│   ├── svc/             # Service context
+│   └── types/           # Type definitions
+├── build/               # Generated static files (after `pnpm build`)
+├── main.go              # Go backend entry point
+├── svelte.config.js     # SvelteKit configuration
+├── tailwind.config.js   # Tailwind and DaisyUI config
+├── package.json         # Frontend dependencies
+└── go.mod               # Go module file
+```
+
+## Svelte 5 Features
+
+Use **Svelte 5 syntax**:
+- **Runes**: `$state`, `$derived` for reactivity.
+- **Events**: `onclick` instead of `on:click`.
+- **Snippets**: Replace slots.
+- **Props**: `$props()` instead of `export let`.
+- **State**: Access via `$app/state`.
+
+Refer to `ai-docs/svelte.txt` for details.
+
+## Current Path Aliases
+
+- `"@components": "./src/components"`
+- `"@utils": "./src/utils"`
+- `"@hooks": "./src/hooks"`
+- `"@src": "./src"`
+- `"@server": "./src/lib/server"`
+- `"@api": "./src/lib/api"`
+- `"@types": "./src/types"`
+- `"@schemas": "./src/schemas"`
+- `"@state": "./src/lib/state"`
+- `"@db": "./src/lib/server/db"`
+
+Example:
+```typescript
+import { api } from '@api';
+```
+
+## Styling with Tailwind CSS and DaisyUI
+
+Customize DaisyUI themes in `tailwind.config.js`:
+```javascript
+daisyui: {
+  themes: ["light", "dark", "cupcake"],
+},
+```
+
+Use DaisyUI components:
+```svelte
+<button class="btn btn-primary" onclick={() => api.ProfileGet()}>Get Profile</button>
+```
+
+## Troubleshooting
+
+- **API Errors**: Check `ast/` definitions and run `make gen` if updated.
+- **404s**: Ensure Go’s `NoRoute` serves `index.html`.
+- **CORS**: Serve frontend and backend from the same domain.
+- **Styles**: Verify `app.css` is imported in `+layout.svelte`.

@@ -285,6 +285,7 @@ type MemoryUsage struct {
 // PatternMatcher interface for different matching strategies
 type PatternMatcher interface {
 	Match(data []byte, pattern string) *MatchResult
+	FindAllMatches(data []byte, pattern string) []MatchResult
 }
 
 // MatchResult represents a single match result
@@ -296,20 +297,31 @@ type MatchResult struct {
 // LiteralMatcher implements literal string matching
 type LiteralMatcher struct{}
 
-// Match performs literal string matching on byte data
+// Match performs literal string matching on byte data (returns first match)
 func (lm *LiteralMatcher) Match(data []byte, pattern string) *MatchResult {
+	matches := lm.FindAllMatches(data, pattern)
+	if len(matches) > 0 {
+		return &matches[0]
+	}
+	return nil
+}
+
+// FindAllMatches finds all occurrences of the pattern in the data
+func (lm *LiteralMatcher) FindAllMatches(data []byte, pattern string) []MatchResult {
+	var matches []MatchResult
 	patternBytes := []byte(pattern)
 
 	for i := 0; i <= len(data)-len(patternBytes); i++ {
 		if bytesEqual(data[i:i+len(patternBytes)], patternBytes) {
-			return &MatchResult{
+			matches = append(matches, MatchResult{
 				Column: i + 1, // 1-indexed
 				Length: len(patternBytes),
-			}
+			})
+			// Continue searching after this match for overlapping patterns
 		}
 	}
 
-	return nil
+	return matches
 }
 
 // bytesEqual compares two byte slices for equality
