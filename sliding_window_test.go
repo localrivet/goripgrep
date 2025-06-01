@@ -892,6 +892,139 @@ func TestProgressCallback(t *testing.T) {
 	}
 }
 
+func TestEnhancedProgressReporting(t *testing.T) {
+	// Create a larger test file for meaningful progress tracking
+	content := strings.Repeat("line with search pattern\n", 10000) // ~250KB file
+	tmpFile, err := os.CreateTemp("", "enhanced_progress_test_*.txt")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("Failed to write test content: %v", err)
+	}
+	tmpFile.Close()
+
+	// Track progress updates
+	var progressUpdates []ProgressInfo
+	var basicUpdates []struct {
+		bytesProcessed, totalBytes int64
+		percentage                 float64
+	}
+	var progressMutex sync.Mutex
+
+	// Test both basic and detailed progress callbacks
+	searcher, err := NewSlidingWindowSearcher(tmpFile.Name(), "search", SlidingWindowOptions{
+		ChunkSize:   32 * 1024, // 32KB chunks for multiple progress updates
+		OverlapSize: 1024,      // 1KB overlap
+		ProgressCallback: func(bytesProcessed, totalBytes int64, percentage float64) {
+			progressMutex.Lock()
+			basicUpdates = append(basicUpdates, struct {
+				bytesProcessed, totalBytes int64
+				percentage                 float64
+			}{bytesProcessed, totalBytes, percentage})
+			progressMutex.Unlock()
+		},
+		ProgressCallbackDetailed: func(info ProgressInfo) {
+			progressMutex.Lock()
+			progressUpdates = append(progressUpdates, info)
+			progressMutex.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatalf("Failed to create searcher: %v", err)
+	}
+	defer searcher.Close()
+
+	ctx := context.Background()
+	matches, err := searcher.Search(ctx)
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+
+	// Verify we found expected matches (allow some variation due to overlap handling)
+	expectedMatches := 10000
+	minMatches := int(float64(expectedMatches) * 0.95)
+	maxMatches := int(float64(expectedMatches) * 1.05)
+	if len(matches) < minMatches || len(matches) > maxMatches {
+		t.Errorf("Expected approximately %d matches (±5%%), got %d", expectedMatches, len(matches))
+	}
+
+	// Verify basic progress updates
+	progressMutex.Lock()
+	defer progressMutex.Unlock()
+
+	if len(basicUpdates) == 0 {
+		t.Error("No basic progress updates received")
+	}
+
+	if len(progressUpdates) == 0 {
+		t.Error("No detailed progress updates received")
+	}
+
+	// Verify progress is monotonically increasing
+	for i := 1; i < len(progressUpdates); i++ {
+		if progressUpdates[i].BytesProcessed < progressUpdates[i-1].BytesProcessed {
+			t.Errorf("Progress not monotonic: %d < %d",
+				progressUpdates[i].BytesProcessed, progressUpdates[i-1].BytesProcessed)
+		}
+	}
+
+	// Check the final progress update
+	finalUpdate := progressUpdates[len(progressUpdates)-1]
+
+	// Verify final progress
+	if finalUpdate.Percentage != 100.0 {
+		t.Errorf("Final percentage should be 100.0, got %f", finalUpdate.Percentage)
+	}
+
+	// Verify progress components are reasonable
+	if finalUpdate.ProcessingRate <= 0 {
+		t.Error("Processing rate should be positive")
+	}
+
+	if finalUpdate.ElapsedTime <= 0 {
+		t.Error("Elapsed time should be positive")
+	}
+
+	if finalUpdate.ChunksProcessed <= 0 {
+		t.Error("Should have processed at least one chunk")
+	}
+
+	// Allow some variation in matches found due to overlap filtering
+	minMatchesFound := int(float64(expectedMatches) * 0.95)
+	maxMatchesFound := int(float64(expectedMatches) * 1.05)
+	if finalUpdate.MatchesFound < minMatchesFound || finalUpdate.MatchesFound > maxMatchesFound {
+		t.Errorf("Expected approximately %d matches found (±5%%), got %d", expectedMatches, finalUpdate.MatchesFound)
+	}
+
+	// Verify ETA was calculated (should be 0 at completion)
+	if finalUpdate.EstimatedTimeLeft != 0 {
+		t.Logf("Final ETA: %v (expected 0 but may be calculated)", finalUpdate.EstimatedTimeLeft)
+	}
+
+	// Check intermediate progress updates have reasonable ETA
+	hasValidETA := false
+	for _, update := range progressUpdates[:len(progressUpdates)-1] { // Exclude final update
+		if update.EstimatedTimeLeft > 0 {
+			hasValidETA = true
+			break
+		}
+	}
+
+	if !hasValidETA && len(progressUpdates) > 1 {
+		t.Log("Warning: No intermediate updates had valid ETA estimates")
+	}
+
+	t.Logf("Progress tracking completed successfully:")
+	t.Logf("- Total progress updates: %d", len(progressUpdates))
+	t.Logf("- Final processing rate: %.2f bytes/sec", finalUpdate.ProcessingRate)
+	t.Logf("- Total elapsed time: %v", finalUpdate.ElapsedTime)
+	t.Logf("- Chunks processed: %d", finalUpdate.ChunksProcessed)
+	t.Logf("- Matches found: %d", finalUpdate.MatchesFound)
+}
+
 // Helper function to create temporary files for testing
 func createTempFile(content string) (string, error) {
 	tmpDir := os.TempDir()

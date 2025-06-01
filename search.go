@@ -3,10 +3,13 @@ package goripgrep
 import (
 	"bufio"
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -30,6 +33,17 @@ type SearchConfig struct {
 	StreamingSearch    bool                 // Enable streaming search for large files
 	StreamingOptions   SlidingWindowOptions // Configuration for streaming search
 	LargeSizeThreshold int64                // File size threshold to trigger streaming search
+
+	// Performance optimization options
+	FastFileFiltering         bool // Enable fast extension-based filtering before content checks
+	EarlyBinaryDetection      bool // Enable early binary detection (first 512 bytes)
+	OptimizedWalking          bool // Use filepath.WalkDir instead of filepath.Walk
+	SkipKnownBinary           bool // Skip known binary extensions immediately
+	LiteralStringOptimization bool // Use fast string search for literal patterns
+	MemoryPooling             bool // Use object pools to reduce allocations
+	LargeFileBuffers          bool // Use larger I/O buffers for better performance
+	RegexCaching              bool // Cache compiled regex patterns
+	MemoryMappedFiles         bool // Use memory-mapped files for large files
 }
 
 // SearchEngine provides integrated search functionality
@@ -207,37 +221,138 @@ func (e *SearchEngine) searchWorker(ctx context.Context, pattern string, filesCh
 	}
 }
 
-// searchFile searches a single file using the appropriate engine
+// searchFile processes an individual file (updated to support memory mapping)
 func (e *SearchEngine) searchFile(ctx context.Context, pattern string, filePath string) ([]Match, error) {
-	// Check if we should use streaming search for large files
-	if e.config.StreamingSearch {
-		fileInfo, err := os.Stat(filePath)
-		if err == nil && fileInfo.Size() >= e.config.LargeSizeThreshold {
-			// File is large enough for streaming search
-			return e.streamingSearch(ctx, pattern, filePath)
-		}
+	// Check for context cancellation
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
 	}
 
-	// Use the optimized engine if enabled
-	if e.config.UseOptimization {
-		// Create optimized engine for this pattern
-		args := SearchArgs{
-			Pattern:      pattern,
-			IgnoreCase:   &e.config.IgnoreCase,
-			ContextLines: &e.config.ContextLines,
-		}
-
-		engine, err := NewEngine(args)
-		if err != nil {
-			// Fall back to simple search
-			return e.simpleSearch(ctx, pattern, filePath)
-		}
-
-		return engine.Search(ctx, filePath)
+	// Get file info for size-based decisions
+	info, err := os.Stat(filePath)
+	if err != nil {
+		return nil, err
 	}
 
-	// Fall back to simple search
+	// Track stats
+	e.stats.FilesScanned++
+	e.stats.BytesScanned += info.Size()
+
+	// Use memory-mapped files for large files if enabled
+	if e.config.MemoryMappedFiles && info.Size() > 1024*1024 { // 1MB threshold
+		return e.mmapSearch(ctx, pattern, filePath, info.Size())
+	}
+
+	// Use streaming search for large files if enabled and file is above threshold
+	if e.config.StreamingSearch && info.Size() > e.config.LargeSizeThreshold {
+		return e.streamingSearch(ctx, pattern, filePath)
+	}
+
+	// For smaller files, use simple search
 	return e.simpleSearch(ctx, pattern, filePath)
+}
+
+// mmapSearch performs memory-mapped file search for large files
+func (e *SearchEngine) mmapSearch(ctx context.Context, pattern string, filePath string, fileSize int64) ([]Match, error) {
+	// Open the file
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	if fileSize == 0 {
+		return nil, nil
+	}
+
+	// Memory map the file
+	data, err := syscall.Mmap(int(file.Fd()), 0, int(fileSize), syscall.PROT_READ, syscall.MAP_PRIVATE)
+	if err != nil {
+		// Fallback to regular search if mmap fails
+		return e.simpleSearch(ctx, pattern, filePath)
+	}
+	defer func() {
+		if unmapErr := syscall.Munmap(data); unmapErr != nil {
+			// Log error but don't fail the search
+			_ = unmapErr
+		}
+	}()
+
+	// Convert bytes to string safely
+	content := string(data)
+
+	// Split into lines efficiently
+	lines := strings.Split(content, "\n")
+
+	// Compile regex
+	var regex *regexp.Regexp
+	if e.config.IgnoreCase {
+		regex, err = regexp.Compile(`(?i)` + pattern)
+	} else {
+		regex, err = regexp.Compile(pattern)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var matches []Match
+
+	// Search each line
+	for lineNum, line := range lines {
+		// Check for context cancellation periodically
+		if lineNum%1000 == 0 {
+			select {
+			case <-ctx.Done():
+				return matches, ctx.Err()
+			default:
+			}
+		}
+
+		// Find all matches in this line
+		indices := regex.FindAllStringIndex(line, -1)
+		for _, match := range indices {
+			matchObj := Match{
+				File:    filePath,
+				Line:    lineNum + 1,
+				Column:  match[0] + 1,
+				Content: line,
+			}
+
+			// Add context lines if requested
+			if e.config.ContextLines > 0 {
+				matchObj.Context = e.extractContextLinesFromSlice(lines, lineNum, e.config.ContextLines)
+			}
+
+			matches = append(matches, matchObj)
+		}
+	}
+
+	return matches, nil
+}
+
+// extractContextLinesFromSlice extracts context lines from a string slice
+func (e *SearchEngine) extractContextLinesFromSlice(lines []string, centerLine int, contextLines int) []string {
+	var contextResult []string
+
+	// Add lines before the match
+	for i := contextLines; i > 0; i-- {
+		lineIndex := centerLine - i
+		if lineIndex >= 0 && lineIndex < len(lines) {
+			contextResult = append(contextResult, lines[lineIndex])
+		}
+	}
+
+	// Add lines after the match
+	for i := 1; i <= contextLines; i++ {
+		lineIndex := centerLine + i
+		if lineIndex >= 0 && lineIndex < len(lines) {
+			contextResult = append(contextResult, lines[lineIndex])
+		}
+	}
+
+	return contextResult
 }
 
 // streamingSearch performs streaming search on large files using the sliding window approach
@@ -366,13 +481,19 @@ func (e *SearchEngine) walkFiles(ctx context.Context, filesChan chan<- string) {
 		searchPath = e.config.SearchPath
 	}
 
-	if e.config.Recursive {
-		// Recursive mode: walk the entire directory tree
-		visited := make(map[string]bool)
-		err = e.walkPath(ctx, searchPath, visited, filesChan)
+	// Phase 2 optimization: Use optimized walking if enabled
+	if e.config.OptimizedWalking {
+		err = e.optimizedWalk(ctx, searchPath, filesChan)
 	} else {
-		// Non-recursive mode: only process files in the immediate directory
-		err = e.processDirectory(ctx, searchPath, filesChan)
+		// Original logic
+		if e.config.Recursive {
+			// Recursive mode: walk the entire directory tree
+			visited := make(map[string]bool)
+			err = e.walkPath(ctx, searchPath, visited, filesChan)
+		} else {
+			// Non-recursive mode: only process files in the immediate directory
+			err = e.processDirectory(ctx, searchPath, filesChan)
+		}
 	}
 
 	// Silently continue on walk errors (no logging)
@@ -504,6 +625,11 @@ func (e *SearchEngine) processDirectory(ctx context.Context, dirPath string, fil
 
 // shouldIgnoreFile determines if a file should be ignored based on various criteria
 func (e *SearchEngine) shouldIgnoreFile(path string, info os.FileInfo) bool {
+	// Fast extension-based binary filtering (Phase 1 optimization)
+	if e.config.SkipKnownBinary && e.isKnownBinaryExtension(path) {
+		return true
+	}
+
 	// Apply gitignore filtering if enabled
 	if e.config.UseGitignore && e.gitignoreEngine != nil {
 		if e.gitignoreEngine.ShouldIgnore(path) {
@@ -525,12 +651,240 @@ func (e *SearchEngine) shouldIgnoreFile(path string, info os.FileInfo) bool {
 		return true
 	}
 
-	// Skip binary files
-	if isBinaryFile(path) {
+	// Fast file filtering with early text detection
+	if e.config.FastFileFiltering && !e.isLikelyTextFile(path) {
+		return true
+	}
+
+	// Enhanced binary detection
+	if e.config.EarlyBinaryDetection {
+		if e.isBinaryFileOptimized(path) {
+			return true
+		}
+	} else {
+		// Fallback to existing binary detection
+		if isBinaryFile(path) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isKnownBinaryExtension performs fast extension-based binary detection
+func (e *SearchEngine) isKnownBinaryExtension(filePath string) bool {
+	ext := strings.ToLower(filepath.Ext(filePath))
+	binaryExtensions := map[string]bool{
+		// Images
+		".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".bmp": true,
+		".tiff": true, ".tif": true, ".webp": true, ".ico": true,
+		".psd": true, ".ai": true, ".eps": true, ".raw": true, ".cr2": true,
+		// Videos
+		".mp4": true, ".avi": true, ".mov": true, ".wmv": true, ".flv": true,
+		".mkv": true, ".webm": true, ".m4v": true, ".3gp": true, ".mpg": true,
+		// Audio
+		".mp3": true, ".wav": true, ".flac": true, ".aac": true, ".ogg": true,
+		".wma": true, ".m4a": true, ".opus": true, ".aiff": true,
+		// Archives
+		".zip": true, ".tar": true, ".gz": true, ".bz2": true, ".xz": true,
+		".rar": true, ".7z": true, ".dmg": true, ".iso": true, ".deb": true,
+		// Executables
+		".exe": true, ".dll": true, ".so": true, ".dylib": true, ".a": true,
+		".lib": true, ".o": true, ".obj": true, ".bin": true, ".class": true,
+		".jar": true, ".war": true, ".ear": true, ".pyc": true, ".pyo": true,
+		// Documents (binary formats)
+		".pdf": true, ".doc": true, ".docx": true, ".xls": true, ".xlsx": true,
+		".ppt": true, ".pptx": true, ".odt": true, ".ods": true, ".odp": true,
+		// Fonts
+		".ttf": true, ".otf": true, ".woff": true, ".woff2": true, ".eot": true,
+		// Database files
+		".db": true, ".sqlite": true, ".sqlite3": true, ".mdb": true,
+	}
+	return binaryExtensions[ext]
+}
+
+// isLikelyTextFile performs fast text file detection based on extension
+func (e *SearchEngine) isLikelyTextFile(filePath string) bool {
+	ext := strings.ToLower(filepath.Ext(filePath))
+	textExtensions := map[string]bool{
+		// Programming languages
+		".go": true, ".py": true, ".js": true, ".ts": true, ".java": true,
+		".c": true, ".cpp": true, ".cxx": true, ".cc": true, ".h": true, ".hpp": true,
+		".rs": true, ".rb": true, ".php": true, ".swift": true, ".kt": true,
+		".scala": true, ".clj": true, ".hs": true, ".ml": true, ".fs": true,
+		".vb": true, ".cs": true, ".pas": true, ".pl": true, ".pm": true,
+		".lua": true, ".r": true, ".m": true, ".asm": true, ".s": true,
+		// Web technologies
+		".html": true, ".htm": true, ".xhtml": true, ".xml": true, ".xsl": true,
+		".css": true, ".scss": true, ".sass": true, ".less": true,
+		".json": true, ".yaml": true, ".yml": true, ".toml": true,
+		".vue": true, ".jsx": true, ".tsx": true, ".svelte": true,
+		// Documentation and text
+		".txt": true, ".md": true, ".markdown": true, ".rst": true,
+		".tex": true, ".ltx": true, ".org": true, ".adoc": true,
+		".rtf": true, ".man": true, ".1": true, ".2": true, ".3": true,
+		// Configuration and data
+		".cfg": true, ".conf": true, ".config": true, ".ini": true,
+		".env": true, ".properties": true, ".plist": true,
+		".csv": true, ".tsv": true, ".log": true, ".sql": true,
+		// Build and project files
+		".mk": true, ".makefile": true, ".cmake": true, ".gradle": true,
+		".sbt": true, ".cabal": true, ".gemspec": true, ".podspec": true,
+		".dockerfile": true, ".dockerignore": true, ".gitignore": true,
+		// Scripts and shells
+		".sh": true, ".bash": true, ".zsh": true, ".fish": true,
+		".ps1": true, ".psm1": true, ".bat": true, ".cmd": true,
+	}
+
+	// If we know it's a text extension, return true
+	if textExtensions[ext] {
+		return true
+	}
+
+	// Files without extensions might be text (e.g., Makefile, README)
+	if ext == "" {
+		name := strings.ToLower(filepath.Base(filePath))
+		textFiles := map[string]bool{
+			"makefile": true, "dockerfile": true, "readme": true,
+			"changelog": true, "license": true, "authors": true,
+			"contributors": true, "copying": true, "install": true,
+			"news": true, "todo": true, "version": true,
+		}
+		return textFiles[name]
+	}
+
+	// Unknown extensions - let binary detection decide
+	return true
+}
+
+// isBinaryFileOptimized uses optimized binary detection (first 512 bytes)
+func (e *SearchEngine) isBinaryFileOptimized(filePath string) bool {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return true // If we can't read it, treat as binary
+	}
+	defer file.Close()
+
+	// Read first 512 bytes (same as Git's binary detection)
+	buffer := make([]byte, 512)
+	n, err := file.Read(buffer)
+	if err != nil && n == 0 {
+		return true
+	}
+
+	// Check for null bytes (strong binary indicator)
+	nullCount := 0
+	for i := 0; i < n; i++ {
+		if buffer[i] == 0 {
+			nullCount++
+		}
+	}
+
+	// If more than 0.1% are null bytes, consider it binary
+	if n > 0 && float64(nullCount)/float64(n) > 0.001 {
+		return true
+	}
+
+	// Check for high proportion of non-printable characters
+	nonPrintable := 0
+	for i := 0; i < n; i++ {
+		b := buffer[i]
+		// Count non-printable characters (excluding common whitespace)
+		if b < 32 && b != 9 && b != 10 && b != 13 {
+			nonPrintable++
+		}
+		if b > 126 {
+			nonPrintable++
+		}
+	}
+
+	// If more than 5% are non-printable, likely binary
+	if n > 0 && float64(nonPrintable)/float64(n) > 0.05 {
 		return true
 	}
 
 	return false
+}
+
+// optimizedWalk performs fast directory walking using filepath.WalkDir (Phase 2 optimization)
+func (e *SearchEngine) optimizedWalk(ctx context.Context, searchPath string, filesChan chan<- string) error {
+	// For non-recursive mode, use processDirectory instead
+	if !e.config.Recursive {
+		return e.processDirectory(ctx, searchPath, filesChan)
+	}
+
+	return filepath.WalkDir(searchPath, func(path string, d fs.DirEntry, err error) error {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		if err != nil {
+			// Continue on errors
+			return nil
+		}
+
+		// Skip directories
+		if d.IsDir() {
+			// Skip hidden directories if not including hidden files
+			if !e.config.IncludeHidden && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+
+			// Skip known directories to ignore for performance
+			if e.shouldSkipDirectory(d.Name()) {
+				return filepath.SkipDir
+			}
+
+			return nil
+		}
+
+		// Fast file filtering using DirEntry (no need to call os.Stat)
+		info, err := d.Info()
+		if err != nil {
+			return nil // Skip files we can't stat
+		}
+
+		// Apply all file filters
+		if !e.shouldIgnoreFile(path, info) {
+			select {
+			case filesChan <- path:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+
+		return nil
+	})
+}
+
+// shouldSkipDirectory determines if a directory should be skipped entirely
+func (e *SearchEngine) shouldSkipDirectory(dirName string) bool {
+	// Skip common binary/build directories for performance
+	skipDirs := map[string]bool{
+		"node_modules":  true,
+		".git":          true,
+		".svn":          true,
+		".hg":           true,
+		"target":        true,
+		"build":         true,
+		"dist":          true,
+		"out":           true,
+		"bin":           true,
+		"pkg":           true,
+		"vendor":        true,
+		".vscode":       true,
+		".idea":         true,
+		"__pycache__":   true,
+		".pytest_cache": true,
+		".cache":        true,
+		".tmp":          true,
+		".DS_Store":     true,
+	}
+
+	return skipDirs[dirName]
 }
 
 // GetSummary returns a summary of the search results

@@ -670,3 +670,78 @@ func TestProgressCallbackIntegration(t *testing.T) {
 		t.Errorf("Expected final progress to be 100%%, got %f%%", finalProgress)
 	}
 }
+
+func TestProgressCallbackDetailedIntegration(t *testing.T) {
+	// Create a test file large enough to trigger streaming search
+	content := strings.Repeat("line with search pattern\n", 5000) // ~125KB file
+	tmpFile, err := os.CreateTemp("", "detailed_progress_test_*.txt")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("Failed to write test content: %v", err)
+	}
+	tmpFile.Close()
+
+	// Track detailed progress updates
+	var progressUpdates []ProgressInfo
+	var progressMutex sync.Mutex
+
+	// Search with detailed progress reporting
+	results, err := Find("search", tmpFile.Name(),
+		WithStreamingSearch(true),
+		WithLargeSizeThreshold(50*1024), // 50KB threshold to ensure streaming is used
+		WithChunkSize(16*1024),          // 16KB chunks for multiple updates
+		WithProgressCallbackDetailed(func(info ProgressInfo) {
+			progressMutex.Lock()
+			progressUpdates = append(progressUpdates, info)
+			progressMutex.Unlock()
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+
+	// Verify we found matches
+	if len(results.Matches) != 5000 {
+		t.Errorf("Expected 5000 matches, got %d", len(results.Matches))
+	}
+
+	// Verify detailed progress updates were received
+	progressMutex.Lock()
+	defer progressMutex.Unlock()
+
+	if len(progressUpdates) == 0 {
+		t.Error("No detailed progress updates received")
+	}
+
+	// Verify the final progress update
+	finalUpdate := progressUpdates[len(progressUpdates)-1]
+
+	if finalUpdate.Percentage != 100.0 {
+		t.Errorf("Final percentage should be 100.0, got %f", finalUpdate.Percentage)
+	}
+
+	if finalUpdate.ProcessingRate <= 0 {
+		t.Error("Processing rate should be positive")
+	}
+
+	if finalUpdate.MatchesFound != 5000 {
+		t.Errorf("Expected 5000 matches found in progress, got %d", finalUpdate.MatchesFound)
+	}
+
+	// Verify progress increased monotonically
+	for i := 1; i < len(progressUpdates); i++ {
+		if progressUpdates[i].BytesProcessed < progressUpdates[i-1].BytesProcessed {
+			t.Errorf("Progress bytes not monotonic at update %d: %d < %d",
+				i, progressUpdates[i].BytesProcessed, progressUpdates[i-1].BytesProcessed)
+		}
+	}
+
+	t.Logf("Detailed progress integration test completed:")
+	t.Logf("- Progress updates received: %d", len(progressUpdates))
+	t.Logf("- Final processing rate: %.2f bytes/sec", finalUpdate.ProcessingRate)
+	t.Logf("- Total elapsed time: %v", finalUpdate.ElapsedTime)
+}

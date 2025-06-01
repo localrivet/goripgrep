@@ -1,0 +1,55 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+- **Stop When Fixed: Know When to Step Back**
+  - Like a salesperson who stops talking once the sale is made, stop changing code once the issue is fixed
+  - Unnecessary "improvements" risk introducing new bugs and complications
+  - When tests pass and requirements are met, the task is complete
+
+- **Signs It's Time to Stop**
+  - ✅ The original issue is verifiably fixed
+  - ✅ Tests pass and the feature works as expected
+  - ✅ The code is reasonably clean and maintainable
+  - ✅ User/client has confirmed the solution works
+
+- **Resist the Urge to "Perfect" Working Code**
+  ```go
+  // ✅ DO: Stop when the problem is solved
+  func SaveUserPreference(userID string, preference string) error {
+    // Simple solution that works reliably
+    return db.SavePreference(userID, preference)
+  }
+  
+  // ❌ DON'T: Keep "improving" after the fix
+  func SaveUserPreference(userID string, preference string) error {
+    // Unnecessary complexity added after the fix
+    metrics.TrackEvent("save_preference_attempt")
+    if cached, err := cache.GetPreference(userID); err == nil && cached == preference {
+      return nil // Unneeded optimization
+    }
+    err := db.SavePreference(userID, preference)
+    if err == nil {
+      cache.SetPreference(userID, preference) // Added caching that wasn't required
+      metrics.TrackEvent("save_preference_success")
+    }
+    return err
+  }
+  ```
+
+- **Document What Works and Why**
+  - When a solution works, document it clearly
+  - Explain the approach that succeeded and any failed attempts
+  - This helps future developers understand why decisions were made
+
+- **When Refactoring is Appropriate**
+  - Only refactor working code as a separate, deliberate task
+  - Get the original fix approved and merged first
+  - Create a new task specifically for refactoring or improvements
+  - Ensure thorough testing of any refactoring changes
+
+- **The Principle of Minimum Viable Fixes**
+  - The best fix is often the simplest one that reliably solves the problem
+  - Complex solutions create more potential points of failure
+  - Optimize for readability and maintainability, not cleverness

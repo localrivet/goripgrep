@@ -32,6 +32,17 @@ type searchOptions struct {
 	streamingSearch    bool                 // Enable streaming search for large files
 	streamingOptions   SlidingWindowOptions // Configuration for streaming search
 	largeSizeThreshold int64                // File size threshold to trigger streaming search
+
+	// Performance optimization options
+	fastFileFiltering         bool // Enable fast extension-based filtering before content checks
+	earlyBinaryDetection      bool // Enable early binary detection (first 512 bytes)
+	optimizedWalking          bool // Use filepath.WalkDir instead of filepath.Walk
+	skipKnownBinary           bool // Skip known binary extensions immediately
+	literalStringOptimization bool // Use fast string search for literal patterns
+	memoryPooling             bool // Use object pools to reduce allocations
+	largeFileBuffers          bool // Use larger I/O buffers for better performance
+	regexCaching              bool // Cache compiled regex patterns
+	memoryMappedFiles         bool // Use memory-mapped files for large files
 }
 
 // defaultOptions returns the default search options
@@ -55,6 +66,17 @@ func defaultOptions() *searchOptions {
 		streamingSearch:    true,                          // Enable streaming search by default
 		streamingOptions:   DefaultSlidingWindowOptions(), // Use default sliding window options
 		largeSizeThreshold: 100 * 1024 * 1024,             // 100MB threshold for streaming search
+
+		// Performance optimization defaults (Phase 1 optimizations enabled)
+		fastFileFiltering:         true,  // Enable fast extension-based filtering
+		earlyBinaryDetection:      true,  // Enable optimized binary detection
+		optimizedWalking:          true,  // Use faster directory walking
+		skipKnownBinary:           true,  // Skip known binary files immediately
+		literalStringOptimization: false, // Disabled by default, enable via WithPerformanceMode()
+		memoryPooling:             false, // Disabled by default, enable via WithPerformanceMode()
+		largeFileBuffers:          false, // Disabled by default, enable via WithPerformanceMode()
+		regexCaching:              false, // Disabled by default, enable via WithPerformanceMode()
+		memoryMappedFiles:         false, // Disabled by default, enable via WithPerformanceMode()
 	}
 }
 
@@ -113,6 +135,17 @@ func Find(pattern, path string, opts ...Option) (*SearchResults, error) {
 		StreamingSearch:    options.streamingSearch,
 		StreamingOptions:   options.streamingOptions,
 		LargeSizeThreshold: options.largeSizeThreshold,
+
+		// Performance optimization configuration
+		FastFileFiltering:         options.fastFileFiltering,
+		EarlyBinaryDetection:      options.earlyBinaryDetection,
+		OptimizedWalking:          options.optimizedWalking,
+		SkipKnownBinary:           options.skipKnownBinary,
+		LiteralStringOptimization: options.literalStringOptimization,
+		MemoryPooling:             options.memoryPooling,
+		LargeFileBuffers:          options.largeFileBuffers,
+		RegexCaching:              options.regexCaching,
+		MemoryMappedFiles:         options.memoryMappedFiles,
 	}
 
 	// Create and use SearchEngine
@@ -332,9 +365,95 @@ func WithProgressCallback(callback func(bytesProcessed, totalBytes int64, percen
 	}
 }
 
+// WithProgressCallbackDetailed sets a detailed callback function for comprehensive progress reporting
+func WithProgressCallbackDetailed(callback func(info ProgressInfo)) Option {
+	return func(opts *searchOptions) {
+		opts.streamingOptions.ProgressCallbackDetailed = callback
+	}
+}
+
 // WithStreamingOptions sets complete streaming search options (advanced usage)
 func WithStreamingOptions(options SlidingWindowOptions) Option {
 	return func(opts *searchOptions) {
 		opts.streamingOptions = options
+	}
+}
+
+// Performance Optimization Options
+
+// WithFastFileFiltering enables or disables fast extension-based filtering
+func WithFastFileFiltering(enabled bool) Option {
+	return func(opts *searchOptions) {
+		opts.fastFileFiltering = enabled
+	}
+}
+
+// WithEarlyBinaryDetection enables or disables optimized binary detection
+func WithEarlyBinaryDetection(enabled bool) Option {
+	return func(opts *searchOptions) {
+		opts.earlyBinaryDetection = enabled
+	}
+}
+
+// WithOptimizedWalking enables or disables faster directory walking
+func WithOptimizedWalking(enabled bool) Option {
+	return func(opts *searchOptions) {
+		opts.optimizedWalking = enabled
+	}
+}
+
+// WithSkipKnownBinary enables or disables skipping known binary extensions
+func WithSkipKnownBinary(enabled bool) Option {
+	return func(opts *searchOptions) {
+		opts.skipKnownBinary = enabled
+	}
+}
+
+// WithLiteralStringOptimization enables fast string search for literal patterns
+func WithLiteralStringOptimization() Option {
+	return func(opts *searchOptions) {
+		opts.literalStringOptimization = true
+	}
+}
+
+// WithMemoryPooling enables object pooling to reduce allocations
+func WithMemoryPooling() Option {
+	return func(opts *searchOptions) {
+		opts.memoryPooling = true
+	}
+}
+
+// WithLargeFileBuffers enables larger I/O buffers for better performance
+func WithLargeFileBuffers() Option {
+	return func(opts *searchOptions) {
+		opts.largeFileBuffers = true
+	}
+}
+
+// WithRegexCaching enables caching of compiled regex patterns
+func WithRegexCaching() Option {
+	return func(opts *searchOptions) {
+		opts.regexCaching = true
+	}
+}
+
+// WithMemoryMappedFiles enables memory-mapped files for large files
+func WithMemoryMappedFiles() Option {
+	return func(opts *searchOptions) {
+		opts.memoryMappedFiles = true
+	}
+}
+
+// WithPerformanceMode enables all performance optimizations
+func WithPerformanceMode() Option {
+	return func(opts *searchOptions) {
+		opts.literalStringOptimization = true
+		opts.memoryPooling = true
+		opts.largeFileBuffers = true
+		opts.regexCaching = true
+		opts.memoryMappedFiles = true
+		opts.fastFileFiltering = true
+		opts.earlyBinaryDetection = true
+		opts.optimizedWalking = true
 	}
 }

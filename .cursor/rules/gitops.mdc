@@ -1,0 +1,6 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+Never apply yaml directly to the cluster. Always use GitOps

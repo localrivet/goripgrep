@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // BenchmarkGoRipGrepVsStandardRegex compares our optimized search against Go's standard regex
@@ -359,4 +360,158 @@ func BenchmarkMemoryUsage(b *testing.B) {
 		// Force garbage collection to measure actual memory usage
 		_ = results
 	}
+}
+
+func TestPerformanceComparison(t *testing.T) {
+	pattern := `\w+Sushi`
+	testFile := "large_test.csv"
+
+	// Skip if test file doesn't exist
+	if _, err := os.Stat(testFile); os.IsNotExist(err) {
+		t.Skip("Test file not found, skipping performance test")
+	}
+
+	t.Run("FastEngine", func(t *testing.T) {
+		start := time.Now()
+		results, err := QuickFind(pattern, testFile, false)
+		duration := time.Since(start)
+
+		if err != nil {
+			t.Fatalf("FastEngine error: %v", err)
+		}
+
+		t.Logf("FastEngine: %d matches in %v", len(results), duration)
+	})
+
+	t.Run("CurrentEngine", func(t *testing.T) {
+		start := time.Now()
+		results, err := Find(pattern, testFile,
+			WithWorkers(1),
+			WithContextLines(0),
+			WithOptimization(false),
+			WithGitignore(false),
+			WithStreamingSearch(false),
+		)
+		duration := time.Since(start)
+
+		if err != nil {
+			t.Fatalf("CurrentEngine error: %v", err)
+		}
+
+		t.Logf("CurrentEngine: %d matches in %v", len(results.Matches), duration)
+	})
+
+	t.Run("PureRegex", func(t *testing.T) {
+		start := time.Now()
+
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			t.Fatalf("Regex compile error: %v", err)
+		}
+
+		content, err := os.ReadFile(testFile)
+		if err != nil {
+			t.Fatalf("File read error: %v", err)
+		}
+
+		matches := re.FindAll(content, -1)
+		duration := time.Since(start)
+
+		t.Logf("PureRegex: %d matches in %v", len(matches), duration)
+	})
+}
+
+// BenchmarkMemoryMappedFiles tests the performance of memory-mapped file search
+func BenchmarkMemoryMappedFiles(b *testing.B) {
+	// Create a large test file
+	testFile := "large_test_file.txt"
+	content := ""
+	for i := 0; i < 10000; i++ {
+		content += "This is a test line with some BurntSushi content\n"
+		content += "Another line without the pattern\n"
+		content += "Yet another line with different content\n"
+	}
+
+	if err := os.WriteFile(testFile, []byte(content), 0644); err != nil {
+		b.Fatalf("Failed to create test file: %v", err)
+	}
+	defer os.Remove(testFile)
+
+	pattern := `\\w+Sushi`
+
+	b.Run("WithoutMemoryMapping", func(b *testing.B) {
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_, err := Find(pattern, testFile,
+				WithRecursive(false),
+				// No memory mapping option = disabled by default
+			)
+			if err != nil {
+				b.Fatalf("Search failed: %v", err)
+			}
+		}
+	})
+
+	b.Run("WithMemoryMapping", func(b *testing.B) {
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_, err := Find(pattern, testFile,
+				WithRecursive(false),
+				WithMemoryMappedFiles(), // Enable memory mapping
+			)
+			if err != nil {
+				b.Fatalf("Search failed: %v", err)
+			}
+		}
+	})
+
+	b.Run("WithPerformanceMode", func(b *testing.B) {
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_, err := Find(pattern, testFile,
+				WithRecursive(false),
+				WithPerformanceMode(),
+			)
+			if err != nil {
+				b.Fatalf("Search failed: %v", err)
+			}
+		}
+	})
+}
+
+// BenchmarkRealWorldPerformance tests performance on actual project files
+func BenchmarkRealWorldPerformance(b *testing.B) {
+	pattern := `\\w+Sushi`
+	searchPath := "."
+
+	b.Run("CurrentImplementation", func(b *testing.B) {
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			_, err := Find(pattern, searchPath,
+				WithContext(ctx),
+				WithRecursive(true),
+			)
+			cancel()
+			if err != nil && err != context.DeadlineExceeded {
+				b.Fatalf("Search failed: %v", err)
+			}
+		}
+	})
+
+	b.Run("PerformanceMode", func(b *testing.B) {
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			_, err := Find(pattern, searchPath,
+				WithContext(ctx),
+				WithRecursive(true),
+				WithPerformanceMode(),
+			)
+			cancel()
+			if err != nil && err != context.DeadlineExceeded {
+				b.Fatalf("Search failed: %v", err)
+			}
+		}
+	})
 }

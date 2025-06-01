@@ -195,6 +195,9 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	defer cancel()
 	opts = append(opts, goripgrep.WithContext(ctx))
 
+	// Enable performance mode by default for better speed
+	opts = append(opts, goripgrep.WithPerformanceMode())
+
 	var allResults []*goripgrep.SearchResults
 	var totalStats goripgrep.SearchStats
 

@@ -1,0 +1,62 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# No Background Processes Rule
+
+**CRITICAL: Never run any programs, servers, or processes in the background**
+
+## **Strict Prohibitions**
+
+- **❌ NEVER use `&` to run commands in background**
+- **❌ NEVER use `nohup` or similar background process tools**
+- **❌ NEVER set `is_background: true` in terminal commands**
+- **❌ NEVER run servers, applications, or long-running processes in background**
+- **❌ NEVER use `screen`, `tmux`, or detached sessions**
+
+## **Why This Rule Exists**
+
+- **Debugging Difficulty**: Background processes make it impossible to see real-time output and errors
+- **Process Management**: Background processes can become orphaned and difficult to stop
+- **User Control**: Users need to see what's happening and control when processes start/stop
+- **Resource Management**: Hidden background processes consume system resources unknowingly
+
+## **Correct Approaches**
+
+- **✅ Run processes in foreground** so output is visible
+- **✅ Use `Ctrl+C` to stop processes** when needed
+- **✅ Ask user before starting any long-running process**
+- **✅ Explain what will happen** before running commands
+- **✅ Use short-lived commands** when possible
+
+## **Examples**
+
+```bash
+# ❌ WRONG - Background process
+go run main.go &
+npm run dev &
+
+# ✅ CORRECT - Foreground process
+go run main.go
+npm run dev
+
+# ❌ WRONG - Background with timeout
+timeout 10 go run main.go &
+
+# ✅ CORRECT - Ask user to run manually
+echo "Please run 'go run main.go' in a separate terminal"
+```
+
+## **When Long-Running Processes Are Needed**
+
+- **Ask the user** to run the command in a separate terminal
+- **Provide clear instructions** on what command to run
+- **Explain why** the process needs to run
+- **Give guidance** on how to stop it when done
+
+## **Emergency Exception**
+
+The ONLY exception is if the user explicitly requests a background process and understands the implications. Even then, prefer asking them to run it manually.
+
+**This rule has NO exceptions for convenience - user visibility and control always takes priority.**
